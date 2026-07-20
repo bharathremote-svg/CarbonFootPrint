@@ -10,11 +10,17 @@ reduction-goal planner, plus a history log and about page.
 """
 
 import datetime as dt
-
-import streamlit as st
 import os
+import re
 import json
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 from joblib import load
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 from calculations import (
     UserInputs, emissions_breakdown, total_footprint, footprint_badge,
@@ -51,17 +57,79 @@ def init_state():
 init_state()
 st.markdown(get_css(st.session_state.dark_mode), unsafe_allow_html=True)
 
+def _get_google_drive_file_id(share_url: str) -> str | None:
+    match = re.search(r"/d/([A-Za-z0-9_-]+)", share_url)
+    if match:
+        return match.group(1)
+    match = re.search(r"[?&]id=([A-Za-z0-9_-]+)", share_url)
+    return match.group(1) if match else None
+
+
+def _get_confirm_token(response):
+    for key, value in getattr(response, 'cookies', {}).items():
+        if key.startswith('download_warning'):
+            return value
+    if hasattr(response, 'text'):
+        m = re.search(r'confirm=([0-9A-Za-z_]+)', response.text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _download_google_drive_file(file_id: str, destination: str) -> bool:
+    url = 'https://docs.google.com/uc?export=download'
+    if requests is not None:
+        session = requests.Session()
+        response = session.get(url, params={'id': file_id}, stream=True, timeout=30)
+        token = _get_confirm_token(response)
+        if token:
+            response = session.get(url, params={'id': file_id, 'confirm': token}, stream=True, timeout=30)
+        if response.status_code != 200:
+            return False
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        with open(destination, 'wb') as f:
+            for chunk in response.iter_content(32768):
+                if chunk:
+                    f.write(chunk)
+        return True
+
+    try:
+        download_url = f"{url}&id={file_id}"
+        request = Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        with urlopen(request, timeout=30) as response, open(destination, 'wb') as out_file:
+            out_file.write(response.read())
+        return True
+    except (HTTPError, URLError):
+        return False
+
+
+def _download_model_if_missing(remote_url: str, local_path: str) -> None:
+    if os.path.exists(local_path):
+        return
+    file_id = _get_google_drive_file_id(remote_url)
+    if not file_id:
+        return
+    _download_google_drive_file(file_id, local_path)
+
+
 # Initialize DB
 init_db()
 
 # Load ML model if present
 MODEL_ARTIFACT = None
 MODEL_PATH = os.path.join("models", "model.pkl")
+REMOTE_MODEL_URL = "https://drive.google.com/file/d/1LCL870o4q2vqSybgWBAMMQOvGf7G4GRJ/view?usp=sharing"
+_download_model_if_missing(REMOTE_MODEL_URL, MODEL_PATH)
+
 if os.path.exists(MODEL_PATH):
     try:
         MODEL_ARTIFACT = load(MODEL_PATH)
     except Exception:
         MODEL_ARTIFACT = None
+    
+else:
+    MODEL_ARTIFACT = None
 
 
 def model_predict(u):
