@@ -7,6 +7,7 @@ annual carbon footprint given user inputs. Saves a joblib artifact to
 `models/model.pkl` containing the model, scaler, and feature names.
 """
 
+import os
 import random
 import numpy as np
 import pandas as pd
@@ -110,6 +111,7 @@ def main():
         "pipeline": pipe,
         "feature_names": FEATURE_NAMES,
     }
+    os.makedirs("models", exist_ok=True)
     dump(artifact, "models/model.pkl")
     print("Saved models/model.pkl and synthetic dataset (models/synthetic_dataset.csv)")
 
